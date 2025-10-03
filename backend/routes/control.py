@@ -1,6 +1,7 @@
+from backend.services import volume_control
 from flask import Blueprint, request, jsonify
 from utils.feature_flags import is_enabled
-from services import eye_tracker, voice_cmd,gesture,screenshot  
+from services import eye_tracker, voice_cmd,screenshot  
 
 bp = Blueprint("control", __name__)
 
@@ -28,7 +29,7 @@ def gesture_action():
     if not is_enabled("gesture_control"):
         return jsonify({"error": "Gesture control disabled"}), 403
     action = request.json.get("action")
-    return jsonify(gesture.perform(action))
+    return jsonify(volume_control.perform(action))
 
 @bp.route("/screenshot", methods=["POST"])
 def take_screenshot():
