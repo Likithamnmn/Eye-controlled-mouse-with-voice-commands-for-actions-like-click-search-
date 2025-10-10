@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from typing import Tuple, List, Optional
 import json
 
-# Disable pyautogui failsafe to prevent cursor from getting stuck
+
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0  # Remove any pause between pyautogui commands
+pyautogui.PAUSE = 0  
 
 @dataclass
 class GazePoint:
@@ -35,7 +35,7 @@ class EyeState:
     """Complete eye state information"""
     left_iris: Tuple[float, float]
     right_iris: Tuple[float, float]
-    head_pose: Tuple[float, float, float]  # x, y, z rotation
+    head_pose: Tuple[float, float, float]  
     blink_ratio: float
     attention_score: float
 
@@ -43,29 +43,29 @@ class KalmanGazeFilter:
     """Kalman filter for smooth gaze prediction and tracking"""
     
     def __init__(self):
-        # State: [x, y, vx, vy] (position and velocity)
+        
         self.state = np.zeros(4, dtype=np.float32)
         self.covariance = np.eye(4, dtype=np.float32) * 1000
         
-        # Process noise (how much we expect the state to change)
-        self.process_noise = np.eye(4, dtype=np.float32)
-        self.process_noise[0, 0] = 0.1  # x position variance
-        self.process_noise[1, 1] = 0.1  # y position variance
-        self.process_noise[2, 2] = 0.5  # x velocity variance
-        self.process_noise[3, 3] = 0.5  # y velocity variance
         
-        # Measurement noise (camera/detection uncertainty)
+        self.process_noise = np.eye(4, dtype=np.float32)
+        self.process_noise[0, 0] = 0.1  
+        self.process_noise[1, 1] = 0.1  
+        self.process_noise[2, 2] = 0.5  
+        self.process_noise[3, 3] = 0.5 
+        
+        
         self.measurement_noise = np.eye(2, dtype=np.float32) * 10
         
-        # State transition matrix (constant velocity model)
+        
         self.transition = np.array([
-            [1, 0, 1, 0],  # x = x + vx
-            [0, 1, 0, 1],  # y = y + vy
-            [0, 0, 1, 0],  # vx = vx
-            [0, 0, 0, 1]   # vy = vy
+            [1, 0, 1, 0],  
+            [0, 1, 0, 1],  
+            [0, 0, 1, 0],  
+            [0, 0, 0, 1]   
         ], dtype=np.float32)
         
-        # Observation matrix (we only observe position)
+        
         self.observation = np.array([
             [1, 0, 0, 0],
             [0, 1, 0, 0]
@@ -78,7 +78,7 @@ class KalmanGazeFilter:
         if not self.initialized:
             return 0, 0
         
-        # Predict step
+        
         self.state = self.transition @ self.state
         self.covariance = self.transition @ self.covariance @ self.transition.T + self.process_noise
         
@@ -91,17 +91,17 @@ class KalmanGazeFilter:
             self.initialized = True
             return
         
-        # Adjust noise based on confidence
+        
         adjusted_noise = self.measurement_noise / max(confidence, 0.1)
         
-        # Update step
+        
         innovation = np.array(measurement) - self.observation @ self.state
         innovation_covariance = self.observation @ self.covariance @ self.observation.T + adjusted_noise
         
-        # Kalman gain
+        
         gain = self.covariance @ self.observation.T @ np.linalg.inv(innovation_covariance)
         
-        # State update
+        
         self.state = self.state + gain @ innovation
         self.covariance = (np.eye(4) - gain @ self.observation) @ self.covariance
 
@@ -110,8 +110,8 @@ class AttentionDetector:
     
     def __init__(self, window_size: int = 30):
         self.gaze_history = deque(maxlen=window_size)
-        self.fixation_threshold = 25  # pixels
-        self.min_fixation_duration = 0.15  # seconds
+        self.fixation_threshold = 25  
+        self.min_fixation_duration = 0.15  
     
     def add_gaze_point(self, point: GazePoint):
         """Add new gaze point to history"""
@@ -124,13 +124,13 @@ class AttentionDetector:
         
         recent_points = list(self.gaze_history)[-10:]
         
-        # Calculate gaze variance (lower = more focused)
+        
         x_coords = [p.x for p in recent_points]
         y_coords = [p.y for p in recent_points]
         
         variance = np.var(x_coords) + np.var(y_coords)
         
-        # Convert to attention score (0-1, higher = more focused)
+        
         attention = 1.0 / (1.0 + variance / 1000)
         return min(max(attention, 0.0), 1.0)
     
@@ -141,7 +141,7 @@ class AttentionDetector:
         
         recent_points = list(self.gaze_history)[-10:]
         
-        # Check if points are clustered (fixation)
+        
         center_x = np.mean([p.x for p in recent_points])
         center_y = np.mean([p.y for p in recent_points])
         
@@ -160,47 +160,47 @@ class AdvancedEyeTracker:
     def __init__(self):
         self.screen_w, self.screen_h = pyautogui.size()
         
-        # Initialize components
+        
         self.kalman_filter = KalmanGazeFilter()
         self.attention_detector = AttentionDetector()
         
-        # Eye tracking state
+        
         self.current_gaze = GazePoint(0, 0, 0, 0)
         self.eye_state = EyeState((0, 0), (0, 0), (0, 0, 0), 0, 0)
         
-        # Load latest calibration
+        
         self.calibration_data = None
         self.is_calibrated = False
         self.calibration_quality = "unknown"
         self.auto_fallback_enabled = True
         
-        # Landmark-based mapping system
+        
         self.landmark_mappings = None
         self.screen_region_landmarks = None
         self.calibration_type = "unknown"
         
         self.load_latest_calibration()
         
-        # Adaptation and usage tracking
+        
         self.adaptation_enabled = True
-        self.usage_data = deque(maxlen=1000)  # Store usage patterns
+        self.usage_data = deque(maxlen=1000)  
         
-        # Gaze boundary detection
-        self.gaze_history = deque(maxlen=50)  # Store recent gaze positions
-        self.screen_boundary_margin = 0.15  # 15% margin around screen
-        self.cursor_control_enabled = True  # Can be disabled when looking away
         
-        # Performance metrics
+        self.gaze_history = deque(maxlen=50)  
+        self.screen_boundary_margin = 0.15  
+        self.cursor_control_enabled = True  
+        
+        
         self.fps_counter = deque(maxlen=30)
         self.accuracy_buffer = deque(maxlen=100)
         
-        # Mouse control with adaptive smoothing
-        self.mouse_smoothing = 0.4 if self.is_calibrated else 0.3  # Reduced smoothing for better responsiveness
-        self.last_mouse_pos = (0, 0)
-        self._last_movement = [0, 0]  # For momentum tracking
-        self._last_screen_offset = [0, 0]  # For screen coordinate momentum
         
-        # Real-time landmark tracking
+        self.mouse_smoothing = 0.4 if self.is_calibrated else 0.3  
+        self.last_mouse_pos = (0, 0)
+        self._last_movement = [0, 0]  
+        self._last_screen_offset = [0, 0]  
+        
+        
         self._current_landmark_signature = None
         self._last_adjustment = np.array([0, 0])
         
@@ -218,8 +218,7 @@ class AdvancedEyeTracker:
     def load_latest_calibration(self):
         """Load the most recent calibration data with landmark-based mapping support"""
         try:
-            # Find latest calibration file (prioritize landmark-based)
-            # Look in current directory and services directory
+            
             current_dir = os.getcwd()
             services_dir = os.path.dirname(os.path.abspath(__file__))  # Fixed path resolution
             
@@ -243,15 +242,15 @@ class AdvancedEyeTracker:
                 print("📄 No calibration files found in current or services directory")
                 return False
             
-            # Prioritize landmark files and sort by timestamp
+            
             landmark_files = [f for f in calibration_files if 'landmark_eye_calibration' in f]
             traditional_files = [f for f in calibration_files if 'pure_eye_calibration' in f]
             
-            # Sort each type by modification time (newest first)
+           
             landmark_files.sort(key=os.path.getmtime, reverse=True)
             traditional_files.sort(key=os.path.getmtime, reverse=True)
             
-            # Prefer landmark files if available, otherwise use traditional
+            
             if landmark_files:
                 latest_file = landmark_files[0]
                 print(f"📍 Using latest landmark calibration: {os.path.basename(latest_file)}")
@@ -264,17 +263,17 @@ class AdvancedEyeTracker:
             with open(latest_file, 'r') as f:
                 self.calibration_data = json.load(f)
             
-            # Determine calibration type and load appropriate mappings
+            
             self.calibration_type = self.calibration_data.get('calibration_type', 'traditional')
             
             if self.calibration_type == 'landmark_based':
-                # Load landmark-based mappings
+                
                 self.landmark_mappings = self.calibration_data.get('landmark_screen_mapping', {})
                 self.screen_region_landmarks = self.calibration_data.get('screen_region_landmarks', {})
                 print(f"🗺️  Loaded {len(self.landmark_mappings)} landmark mappings")
                 print(f"📍 Loaded {len(self.screen_region_landmarks)} screen regions")
                 
-                # Assess calibration quality from mapping data
+                
                 mapping_quality = self.calibration_data.get('mapping_quality', {})
                 avg_quality = mapping_quality.get('average_quality', 0.5)
                 
@@ -288,11 +287,11 @@ class AdvancedEyeTracker:
                     self.calibration_quality = "poor"
                     
             else:
-                # Traditional polynomial calibration
+               
                 accuracy = self.calibration_data['transformation_matrix']['accuracy']['total_rmse']
                 transformation_type = self.calibration_data['transformation_matrix'].get('transformation_type', 'polynomial')
                 
-                # Classify calibration quality
+                
                 if accuracy < 50:
                     self.calibration_quality = "excellent"
                 elif accuracy < 100:
@@ -302,7 +301,7 @@ class AdvancedEyeTracker:
                 else:
                     self.calibration_quality = "poor"
             
-            # Auto-disable poor calibrations
+            
             if self.calibration_quality == "poor" and self.auto_fallback_enabled:
                 print(f"⚠️  Calibration quality is poor")
                 print("🔄 Auto-fallback to basic mapping enabled")
@@ -325,24 +324,23 @@ class AdvancedEyeTracker:
         h, w = frame_shape[:2]
         
         try:
-            # Extract iris positions using correct MediaPipe landmarks
-            # Use eye center landmarks instead of iris (more reliable)
+            
             left_eye_center = self._get_eye_center(landmarks, "left", w, h)
             right_eye_center = self._get_eye_center(landmarks, "right", w, h)
             
             left_iris = left_eye_center
             right_iris = right_eye_center
             
-            # Extract current landmark signature for calibration matching
+            
             self._current_landmark_signature = self._extract_current_landmark_signature(landmarks, w, h)
             
-            # Calculate head pose
+            
             head_pose = self._estimate_head_pose(landmarks, w, h)
             
-            # Calculate blink ratio
+            
             blink_ratio = self._calculate_blink_ratio(landmarks, w, h)
             
-            # Update eye state
+            
             self.eye_state = EyeState(
                 left_iris=left_iris,
                 right_iris=right_iris,
@@ -379,9 +377,9 @@ class AdvancedEyeTracker:
     def _get_eye_center(self, landmarks, eye: str, w: int, h: int) -> Tuple[float, float]:
         """Get eye center using multiple landmarks for better accuracy"""
         if eye == "left":
-            # Left eye landmarks - use multiple points for better accuracy
+            
             eye_landmarks = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-            # Also try to use iris landmarks if available
+            
             try:
                 iris_center = landmarks.landmark[468]  # Left iris center
                 if iris_center.x > 0 and iris_center.y > 0:
@@ -389,17 +387,17 @@ class AdvancedEyeTracker:
             except (IndexError, AttributeError):
                 pass
         else:
-            # Right eye landmarks
+            
             eye_landmarks = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
-            # Try iris center first
+            
             try:
-                iris_center = landmarks.landmark[473]  # Right iris center
+                iris_center = landmarks.landmark[473]  
                 if iris_center.x > 0 and iris_center.y > 0:
                     return float(iris_center.x * w), float(iris_center.y * h)
             except (IndexError, AttributeError):
                 pass
         
-        # Fallback to average of eye landmarks
+        
         eye_points = []
         for idx in eye_landmarks:
             if idx < len(landmarks.landmark):
@@ -411,7 +409,7 @@ class AdvancedEyeTracker:
             center = np.mean(eye_array, axis=0)
             return float(center[0]), float(center[1])
         
-        # Final fallback to corner method
+        
         if eye == "left":
             outer_corner = landmarks.landmark[33]
             inner_corner = landmarks.landmark[133]
@@ -429,11 +427,7 @@ class AdvancedEyeTracker:
         try:
             signature = {}
             
-            # Note: Ensure coordinate system matches calibrator
-            # Calibrator uses non-mirrored coordinates by default
-            # If camera display is mirrored, landmark coordinates remain consistent
             
-            # Left iris landmarks (same as calibrator)
             left_iris_indices = [474, 475, 476, 477, 478]
             left_iris_points = []
             for idx in left_iris_indices:
@@ -446,10 +440,10 @@ class AdvancedEyeTracker:
                 signature['left_iris'] = {
                     'centroid': np.mean(left_iris_array[:, :2], axis=0).tolist(),
                     'std': np.std(left_iris_array[:, :2], axis=0).tolist(),
-                    'area': len(left_iris_points) * 2.0  # Approximate area
+                    'area': len(left_iris_points) * 2.0  
                 }
             
-            # Right iris landmarks (same as calibrator)
+            
             right_iris_indices = [469, 470, 471, 472, 473]
             right_iris_points = []
             for idx in right_iris_indices:
@@ -465,7 +459,7 @@ class AdvancedEyeTracker:
                     'area': len(right_iris_points) * 2.0  # Approximate area
                 }
             
-            # Eye region landmarks (same as calibrator)
+            
             left_eye_outline = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
             left_eye_points = []
             for idx in left_eye_outline:
@@ -494,8 +488,8 @@ class AdvancedEyeTracker:
                     'std': np.std(right_eye_array, axis=0).tolist()
                 }
             
-            # Add face key points for better matching
-            key_points = [1, 175, 234, 454, 10, 152]  # nose, chin, left face, right face, forehead, bottom
+            
+            key_points = [1, 175, 234, 454, 10, 152]  
             face_points = []
             for idx in key_points:
                 if idx < len(landmarks.landmark):
@@ -517,7 +511,7 @@ class AdvancedEyeTracker:
     
     def _estimate_head_pose(self, landmarks, w: int, h: int) -> Tuple[float, float, float]:
         """Estimate 3D head pose for gaze correction"""
-        # Key facial points for pose estimation
+        
         nose_tip = landmarks.landmark[1]
         chin = landmarks.landmark[175]
         left_eye = landmarks.landmark[33]
@@ -1218,6 +1212,40 @@ class AdvancedEyeTracker:
         print("   For full calibration, run pure_eye_calibrator.py")
         print("   Current system uses adaptive camera-to-screen mapping")
 
+
+    def _calculate_fps(self):
+        """Estimate frames per second based on recent timestamps"""
+        if len(self.fps_counter) < 2:
+            return 0.0
+        duration = self.fps_counter[-1] - self.fps_counter[0]
+        return round(len(self.fps_counter) / duration, 2) if duration > 0 else 0.0
+    
+    def get_tracker_status(self) :
+        """Generate a summary of current tracker status and performance metrics"""
+        attention_score = self.attention_detector.get_attention_score()
+        fixation = self.attention_detector.detect_fixation()
+        screen_engagement = fixation is not None
+
+        return {
+            "usage_data": list(self.usage_data),
+            "performance_metrics": {
+            "fps": self._calculate_fps(),
+            "confidence": self.current_gaze.confidence,
+            "attention_score": attention_score,
+            "head_pose": list(self.eye_state.head_pose),
+            "calibrated": self.is_calibrated,
+            "tracking_mode": "Pure Eye Movement" if self.is_calibrated else "Basic Head Tracking",
+            "cursor_control_enabled": self.cursor_control_enabled,
+            "screen_engagement": screen_engagement
+        },
+        "session_duration": time.time() - getattr(self, "session_start_time", 0),
+        "screen_resolution": [self.screen_w, self.screen_h]
+    }
+
+
+
+    
+
 def create_advanced_eye_tracking_demo():
     """Create a demo of the advanced eye tracking system"""
     print("🚀 Starting iPhone-inspired Advanced Eye Tracking Demo")
@@ -1495,5 +1523,9 @@ def create_advanced_eye_tracking_demo():
         tracker.save_usage_data()
         print("✅ Advanced Eye Tracking completed")
 
+
+
 if __name__ == "__main__":
+    
     create_advanced_eye_tracking_demo()
+    
