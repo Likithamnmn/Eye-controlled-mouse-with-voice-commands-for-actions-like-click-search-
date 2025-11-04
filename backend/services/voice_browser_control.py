@@ -30,6 +30,7 @@ class VoiceBrowserController:
         self.driver = None
         self.listening = False
         self.command_queue = queue.Queue()
+       
         
         # Configure speech recognition
         self.recognizer.energy_threshold = 300
@@ -52,7 +53,8 @@ class VoiceBrowserController:
         print("   • 'Play video' - Play/resume video")
         print("   • 'Pause video' - Pause video")
         print("   • 'Stop listening' - Exit the program")
-        
+    
+    
     def _find_chrome_path(self):
         """Find Chrome executable path"""
         possible_paths = [
@@ -167,43 +169,45 @@ class VoiceBrowserController:
         """Listen for voice commands continuously"""
         print("\n🎤 Listening for voice commands...")
         print("💡 Speak clearly and wait for the beep!")
-        
+
         with self.microphone as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=1)
             print("🔧 Adjusted for ambient noise")
-        
+
         self.listening = True
-        
+
         while self.listening:
             try:
                 with self.microphone as source:
+                    if not self.listening:
+                        break  # if stop() was called during previous cycle
+
                     if self.search_mode:
-                        print("\n� Listening for search query... (speak your full search term)")
-                        # Longer listening for search queries
+                        print("\n🔍 Listening for search query...")
                         audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=10)
                     else:
                         print("\n👂 Listening...")
-                        # Normal listening for commands
                         audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
-                
+
+                if not self.listening:
+                    break  # break after finishing recognition if stopped
+
                 print("🔄 Processing speech...")
-                
-                # Use Google Speech Recognition
                 command = self.recognizer.recognize_google(audio).lower()
                 print(f"🗣️ Heard: '{command}'")
-                
-                # Process the command
                 self.process_command(command)
-                
+
             except sr.WaitTimeoutError:
-                # No speech detected, continue listening
-                pass
+                continue
             except sr.UnknownValueError:
                 print("❓ Could not understand the command")
             except sr.RequestError as e:
                 print(f"❌ Speech recognition error: {e}")
             except Exception as e:
                 print(f"❌ Unexpected error: {e}")
+
+        print("🛑 Voice listening stopped gracefully.")
+
     
     def process_command(self, command):
         """Process recognized voice command"""
@@ -580,6 +584,8 @@ class VoiceBrowserController:
             
         except Exception as e:
             print(f"❌ Failed to play video: {e}")
+
+    
     
     def pause_video(self):
         """Pause video (works on YouTube and most video sites)"""
@@ -624,18 +630,38 @@ class VoiceBrowserController:
         print("👋 Voice Browser Controller stopped!")
     
     def run(self):
-        """Main run loop"""
         print("\n🚀 Starting Voice Browser Controller...")
-        print("📢 Say 'Open Chrome' to begin, or 'Stop listening' to exit")
-        
+        self.active = True
+        self.listening = True   # ✅ start listening here
         try:
             self.listen_for_commands()
-        except KeyboardInterrupt:
-            print("\n⏹️ Interrupted by user")
-            self.stop_listening()
         except Exception as e:
             print(f"❌ Fatal error: {e}")
-            self.stop_listening()
+        finally:
+            self.active = False
+            print("🧩 Voice controller stopped gracefully.")
+
+    def stop(self):
+        """🛑 Gracefully stop voice recognition and browser control"""
+        print("🧹 Stopping VoiceBrowserController...")
+        self.listening = False  # signal stop
+
+        try:
+            # stop microphone listening if background thread exists
+            if hasattr(self, "stop_listening_fn") and self.stop_listening_fn:
+                    self.stop_listening_fn(wait_for_stop=False)
+                    print("🎙️ Microphone listener stopped")
+
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+                print("✅ Browser closed cleanly")
+        except Exception as e:
+            print(f"⚠️ Error during stop: {e}")
+
+        print("🔇 Voice recognition stopped.")
+
+
 
 def main():
     """Main function to run the voice browser controller"""

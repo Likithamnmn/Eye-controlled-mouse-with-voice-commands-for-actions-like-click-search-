@@ -22,6 +22,8 @@ import json
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0  
 
+should_stop = False
+
 @dataclass
 class GazePoint:
     """Represents a gaze point with timestamp and confidence"""
@@ -159,6 +161,8 @@ class AdvancedEyeTracker:
     
     def __init__(self):
         self.screen_w, self.screen_h = pyautogui.size()
+        self.active = False
+        self.tracker = None  
         
         
         self.kalman_filter = KalmanGazeFilter()
@@ -214,6 +218,37 @@ class AdvancedEyeTracker:
                 print(f"🔄 Calibration available but using basic mapping (Quality: {self.calibration_quality})")
             else:
                 print("⚠️  No calibration found - using basic head tracking mode")
+
+    def update(self):
+        if not self.active or self.tracker is None:
+            return
+        try:
+            self.tracker.update()  # one frame of tracking
+        except Exception as e:
+            print(">>> Tracker iteration error:", e)
+            self.stop()
+
+    def stop(self):
+        if self.tracker:
+            print(">>> Stopping eye tracker...")
+            try:
+                self.tracker.shutdown()  # release camera
+            except Exception as e:
+                print(">>> Tracker shutdown exception:", e)
+            self.tracker = None
+        self.active = False
+        print(">>> Eye tracker stopped")
+
+    def _init_tracker(self):
+        # Original initialization routine
+        from services import some_internal_tracker
+        try:
+            t = some_internal_tracker.create_advanced_eye_tracking_demo()
+            return t
+        except Exception as e:
+            print(">>> Tracker init failed:", e)
+            return None
+    
     
     def load_latest_calibration(self):
         """Load the most recent calibration data with landmark-based mapping support"""
@@ -1340,7 +1375,15 @@ def create_advanced_eye_tracking_demo():
     # Main tracking loop with simplified detection
     try:
         print("🎥 Starting camera capture...")
+        global should_stop
+        should_stop = False  # Reset on start
+        
         while True:
+            # Check for stop flag - allows external stopping
+            if should_stop:
+                print("🛑 Stop flag detected, exiting...")
+                break
+                
             ret, frame = cap.read()
             if not ret:
                 print("❌ Failed to read from camera")
@@ -1518,6 +1561,8 @@ def create_advanced_eye_tracking_demo():
         print(f"❌ Error during tracking: {e}")
     
     finally:
+        
+        should_stop = False  # Reset stop flag
         cap.release()
         cv2.destroyAllWindows()
         tracker.save_usage_data()
