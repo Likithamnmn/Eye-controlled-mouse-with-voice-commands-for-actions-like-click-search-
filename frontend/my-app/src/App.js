@@ -1,8 +1,10 @@
+
 import React, { useState } from 'react';
 import StartPage from './components/StartPage';
 import EyeVoiceWidget from './components/EyeVoiceWidget';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from './components/ui/button';
+console.log("API URL:", process.env.REACT_APP_API_URL);
 
 export default function App() {
   const [showStartPage, setShowStartPage] = useState(true);
