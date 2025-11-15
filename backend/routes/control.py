@@ -72,15 +72,27 @@ def eye_start():
         time.sleep(0.5)
     
     try:
+        # Run calibration first (blocking) so the tracker picks up the new file
+        try:
+            print("🔧 Running calibration before starting eye tracker...")
+            calib_file = pure_eye_calibrator.run_pure_eye_calibration()
+            if not calib_file:
+                controllers["eye"] = None
+                return jsonify({"error": "Calibration failed or cancelled"}), 400
+            print(f"🔎 Calibration saved: {calib_file}")
+        except Exception as e:
+            controllers["eye"] = None
+            return jsonify({"error": f"Calibration error: {str(e)}"}), 500
+
         # Use threading (multiprocessing doesn't share globals well)
         eye_tracker_stop_event = threading.Event()
         eye_tracker_should_stop = False
         controllers["eye"] = "running"  # Mark as running
-        
+
         # Create thread - global variables will be shared
         eye_tracker_thread = threading.Thread(target=run_eye_control, daemon=True)
         eye_tracker_thread.start()
-        
+
         return jsonify({"status": "Eye control started", "eye_active": True})
     except Exception as e:
         controllers["eye"] = None

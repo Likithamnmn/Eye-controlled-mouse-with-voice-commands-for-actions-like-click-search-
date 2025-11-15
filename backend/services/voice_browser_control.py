@@ -1,6 +1,7 @@
 """
 Voice-Controlled Browser Automation Script
 Recognizes voice commands to control Chrome browser with various actions
+Enhanced with Gemini API for screen analysis and intelligent Q&A
 """
 
 import speech_recognition as sr
@@ -21,6 +22,38 @@ import os
 import win32gui
 import win32con
 import psutil
+import base64
+from io import BytesIO
+from PIL import Image
+import ctypes
+from ctypes import wintypes
+
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    # Try loading from multiple locations
+    # 1. Project root (default)
+    load_dotenv()
+    # 2. backend/services folder
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    services_env = os.path.join(current_dir, '.env')
+    if os.path.exists(services_env):
+        load_dotenv(services_env)
+        print(f"✅ Loaded .env from services folder: {services_env}")
+    # 3. Also try parent directory (project root from services folder)
+    parent_env = os.path.join(os.path.dirname(current_dir), '.env')
+    if os.path.exists(parent_env):
+        load_dotenv(parent_env)
+except ImportError:
+    print("⚠️ python-dotenv not installed. Install with: pip install python-dotenv")
+
+# Gemini API
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    print("⚠️ google-generativeai not installed. Install with: pip install google-generativeai")
+    GEMINI_AVAILABLE = False
 
 class VoiceBrowserController:
     def __init__(self):
@@ -41,18 +74,65 @@ class VoiceBrowserController:
         # Browser automation settings
         self.chrome_path = self._find_chrome_path()
         
+        # Initialize Gemini API
+        self.gemini_model = None
+        self._initialize_gemini()
+        
         print("🎤 Voice Browser Controller initialized!")
         print("📋 Available commands:")
         print("   • 'Open Chrome' - Launch Chrome browser")
         print("   • 'Search [your query]' - Search on Google")
         print("   • 'Search' (then say query) - Two-step search")
+        print("   • 'Search meaning of [word]' - Search word meaning")
+        print("   • 'What's on my screen?' or 'Analyze screen' - Analyze current screen")
+        print("   • 'Summarise document' or 'Summarise page' - Summarise current webpage")
         print("   • 'Click' - Click at current cursor position")
         print("   • 'Open another tab' - Open new tab")
         print("   • 'Close tab' - Close current tab")
+        print("   • 'Go back' - Navigate to previous webpage")
+        print("   • 'Minimize' / 'Minimize Chrome' / 'Minimize cursor' / 'Minimize File Explorer' / 'Minimize window' - Minimize windows")
+        print("   • 'Maximize' / 'Maximize Chrome' / 'Maximize cursor' / 'Maximize File Explorer' / 'Maximize window' - Maximize windows")
+        print("   • 'Scroll down' - Scroll down in Chrome or current window")
+        print("   • 'Scroll up' - Scroll up in Chrome or current window")
+        print("   • 'Scroll down more' - Scroll down a full visible page")
+        print("   • 'Scroll up more' - Scroll up a full visible page")
         print("   • 'Close browser' - Close entire browser")
         print("   • 'Play video' - Play/resume video")
         print("   • 'Pause video' - Pause video")
         print("   • 'Stop listening' - Exit the program")
+    
+    def _initialize_gemini(self):
+        """
+        Initialize Gemini API with API key from .env file
+        
+        Note: Gemini API is used for screen analysis features, NOT for word meaning searches.
+        - Word meaning searches use Google search (no API needed)
+        - Gemini API is used for:
+          * "What's on my screen?" - Analyzes and describes the current screen
+          * "Ask about [question]" - Answers questions about what's visible on screen
+        These features require vision AI to understand screenshots.
+        """
+        if not GEMINI_AVAILABLE:
+            print("⚠️ Gemini API not available. Install google-generativeai package.")
+            return
+        
+        try:
+            api_key = os.getenv('GEMINI_API_KEY')
+            if not api_key:
+                print("⚠️ GEMINI_API_KEY not found in .env file. Screen analysis features will be disabled.")
+                print("💡 Create a .env file in the project root with: GEMINI_API_KEY=your_api_key")
+                print("💡 Note: Word meaning searches work without Gemini API (they use Google search)")
+                return
+            
+            genai.configure(api_key=api_key)
+            # Using gemini-2.0-flash for vision tasks (screen analysis)
+            self.gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+            print("✅ Gemini API initialized successfully with gemini-2.0-flash!")
+            print("💡 Gemini is used for screen analysis features (not word meanings)")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize Gemini API: {e}")
+            print("💡 Screen analysis features will be disabled.")
+            print("💡 Note: Word meaning searches still work (they use Google search)")
     
     
     def _find_chrome_path(self):
@@ -251,6 +331,53 @@ class VoiceBrowserController:
             elif "close tab" in command:
                 self.close_tab()
             
+            elif "go back" in command or "back" in command:
+                self.go_back()
+            
+            elif "minimize" in command or "minimise" in command:
+                # Handle both US and UK spellings: "minimize" and "minimise"
+                # Check what to minimize: chrome, cursor, file explorer, window, or any window
+                if "chrome" in command:
+                    self.minimize_window("chrome")
+                elif "cursor" in command:
+                    self.minimize_window("cursor")
+                elif "file explorer" in command or "explorer" in command:
+                    self.minimize_window("explorer")
+                elif "window" in command:
+                    # "minimize window" means any window except Chrome and File Explorer
+                    self.minimize_window("other")
+                else:
+                    # Default: minimize active/focused window
+                    self.minimize_window("active")
+            
+            elif "maximize" in command or "maximise" in command:
+                # Handle both US and UK spellings: "maximize" and "maximise"
+                # Check what to maximize: chrome, cursor, file explorer, window, or any window
+                if "chrome" in command:
+                    self.maximize_window("chrome")
+                elif "cursor" in command:
+                    self.maximize_window("cursor")
+                elif "file explorer" in command or "explorer" in command:
+                    self.maximize_window("explorer")
+                elif "window" in command:
+                    # "maximize window" means any window except Chrome and File Explorer
+                    self.maximize_window("other")
+                else:
+                    # Default: maximize active/focused window
+                    self.maximize_window("active")
+            
+            elif "scroll down more" in command or "scroll more down" in command:
+                self.scroll_down_more()
+            
+            elif "scroll up more" in command or "scroll more up" in command:
+                self.scroll_up_more()
+            
+            elif "scroll down" in command:
+                self.scroll_down()
+            
+            elif "scroll up" in command:
+                self.scroll_up()
+            
             elif "close browser" in command:
                 self.close_browser()
             
@@ -263,9 +390,37 @@ class VoiceBrowserController:
             elif "stop listening" in command or "exit" in command:
                 self.stop_listening()
             
+            elif "search meaning" in command or "meaning of" in command:
+                # Extract word/phrase from command - handles multi-word phrases
+                word_match = re.search(r'(?:meaning of|meaning)\s+(.+)', command, re.IGNORECASE)
+                if word_match:
+                    word = word_match.group(1).strip()
+                    # Remove any trailing punctuation
+                    word = re.sub(r'[^\w\s]+$', '', word)
+                    self.search_word_meaning(word)
+                else:
+                    print("❓ Please specify a word. Example: 'Search meaning of artificial intelligence'")
+            
+            elif "what's on my screen" in command or "analyze screen" in command or "what is on my screen" in command:
+                self.analyze_screen()
+            
+            elif "summarize" in command or "summarise" in command:
+                # Handle both US and UK spellings: "summarize" and "summarise"
+                # Works with: "summarize document", "summarise page", "summarize this", etc.
+                self.summarize_current_page()
+            
+            elif command.startswith("ask") or "ask about" in command:
+                # Extract question from command - more flexible pattern
+                question_match = re.search(r'ask\s+(?:about\s+)?(.+)', command, re.IGNORECASE)
+                if question_match:
+                    question = question_match.group(1).strip()
+                    self.ask_about_screen(question)
+                else:
+                    print("❓ Please provide a question about your screen. Example: 'Ask what is this document about'")
+            
             else:
                 print(f"❓ Unknown command: '{command}'")
-                print("💡 Try: 'Open Chrome', 'Search cats', 'Play video', etc.")
+                print("💡 Try: 'Open Chrome', 'Search cats', 'What's on my screen?', etc.")
                 
         except Exception as e:
             print(f"❌ Error executing command '{command}': {e}")
@@ -536,6 +691,388 @@ class VoiceBrowserController:
         except Exception as e:
             print(f"❌ Failed to close tab: {e}")
     
+    def go_back(self):
+        """Navigate back to previous webpage in Chrome"""
+        try:
+            print("⬅️ Going back to previous page...")
+            
+            if self.driver:
+                # Use Selenium to go back
+                self.driver.back()
+                print("✅ Navigated back!")
+            else:
+                # Use PyAutoGUI - Alt+Left Arrow is the browser back shortcut
+                if self.focus_chrome_window():
+                    time.sleep(0.5)
+                    pyautogui.hotkey('alt', 'left')
+                    print("✅ Navigated back!")
+                else:
+                    print("❌ Could not focus Chrome. Please ensure Chrome is open.")
+            
+        except Exception as e:
+            print(f"❌ Failed to go back: {e}")
+    
+    def find_window_under_cursor(self):
+        """Find the window handle under the current cursor position"""
+        try:
+            cursor_x, cursor_y = pyautogui.position()
+            
+            # Use WindowFromPoint to get the exact window under cursor
+            try:
+                # WindowFromPoint gets the window handle at a specific point
+                # It takes a POINT structure
+                point = wintypes.POINT(cursor_x, cursor_y)
+                hwnd = ctypes.windll.user32.WindowFromPoint(point)
+                
+                # Get the top-level parent window (not child controls)
+                # GA_ROOT = 2 means get the root window
+                hwnd = ctypes.windll.user32.GetAncestor(hwnd, 2)
+                
+                if hwnd and win32gui.IsWindowVisible(hwnd):
+                    return hwnd
+            except Exception as e:
+                # Fallback to enumeration method
+                pass
+            
+            # Fallback: enumerate windows and find the one containing the cursor
+            def enum_windows_callback(hwnd, windows):
+                if win32gui.IsWindowVisible(hwnd):
+                    try:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        left, top, right, bottom = rect
+                        # Check if cursor is within window bounds
+                        if left <= cursor_x <= right and top <= cursor_y <= bottom:
+                            windows.append((hwnd, win32gui.GetWindowText(hwnd)))
+                    except:
+                        pass
+                return True
+            
+            windows = []
+            win32gui.EnumWindows(enum_windows_callback, windows)
+            
+            # Return the topmost window (usually the one we want)
+            if windows:
+                return windows[0][0]
+            return None
+        except Exception as e:
+            print(f"⚠️ Error finding window under cursor: {e}")
+            return None
+    
+    def find_file_explorer_window(self):
+        """Find File Explorer window handle"""
+        def enum_windows_callback(hwnd, windows):
+            if win32gui.IsWindowVisible(hwnd):
+                window_text = win32gui.GetWindowText(hwnd)
+                class_name = win32gui.GetClassName(hwnd)
+                # File Explorer windows typically have "Explorer" in class name or title
+                if "explorer" in window_text.lower() or "CabinetWClass" in class_name or "ExploreWClass" in class_name:
+                    windows.append(hwnd)
+            return True
+        
+        windows = []
+        win32gui.EnumWindows(enum_windows_callback, windows)
+        return windows[0] if windows else None
+    
+    def get_active_window(self):
+        """Get the currently active (focused) window handle"""
+        try:
+            return win32gui.GetForegroundWindow()
+        except:
+            return None
+    
+    def find_other_window(self):
+        """Find any window that is not Chrome or File Explorer"""
+        def enum_windows_callback(hwnd, windows):
+            if win32gui.IsWindowVisible(hwnd):
+                try:
+                    window_text = win32gui.GetWindowText(hwnd)
+                    class_name = win32gui.GetClassName(hwnd)
+                    
+                    # Exclude Chrome windows
+                    if "chrome" in window_text.lower() or "Google Chrome" in window_text:
+                        return True
+                    
+                    # Exclude File Explorer windows
+                    if "explorer" in window_text.lower() or "CabinetWClass" in class_name or "ExploreWClass" in class_name:
+                        return True
+                    
+                    # Exclude desktop and taskbar
+                    if window_text == "" or "Desktop" in window_text:
+                        return True
+                    
+                    # This is a valid "other" window
+                    windows.append((hwnd, window_text))
+                except:
+                    pass
+            return True
+        
+        windows = []
+        win32gui.EnumWindows(enum_windows_callback, windows)
+        
+        # Return the first non-Chrome, non-Explorer window found
+        # Or return the active window if it's not Chrome/Explorer
+        active_hwnd = self.get_active_window()
+        if active_hwnd:
+            active_text = win32gui.GetWindowText(active_hwnd)
+            active_class = win32gui.GetClassName(active_hwnd)
+            
+            # Check if active window is not Chrome or Explorer
+            if (active_hwnd not in [w[0] for w in windows] and 
+                "chrome" not in active_text.lower() and 
+                "Google Chrome" not in active_text and
+                "explorer" not in active_text.lower() and
+                "CabinetWClass" not in active_class and
+                "ExploreWClass" not in active_class and
+                active_text != ""):
+                return active_hwnd
+        
+        # Return first found window or None
+        return windows[0][0] if windows else None
+    
+    def minimize_window(self, target="active"):
+        """Minimize a window based on target type"""
+        try:
+            hwnd = None
+            
+            if target == "chrome":
+                print("📉 Minimizing Chrome...")
+                hwnd = self.find_chrome_window()
+                if not hwnd:
+                    print("❌ Chrome window not found")
+                    return
+            elif target == "cursor":
+                print("📉 Minimizing window under cursor...")
+                hwnd = self.find_window_under_cursor()
+                if not hwnd:
+                    print("❌ No window found under cursor")
+                    return
+            elif target == "explorer":
+                print("📉 Minimizing File Explorer...")
+                hwnd = self.find_file_explorer_window()
+                if not hwnd:
+                    print("❌ File Explorer window not found")
+                    return
+            elif target == "other":
+                print("📉 Minimizing other window (not Chrome/File Explorer)...")
+                hwnd = self.find_other_window()
+                if not hwnd:
+                    print("❌ No other window found (excluding Chrome and File Explorer)")
+                    return
+            else:  # active
+                print("📉 Minimizing active window...")
+                hwnd = self.get_active_window()
+                if not hwnd:
+                    print("❌ Could not get active window")
+                    return
+            
+            if hwnd:
+                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+                window_title = win32gui.GetWindowText(hwnd)
+                print(f"✅ Window minimized: {window_title}")
+            
+        except Exception as e:
+            print(f"❌ Failed to minimize window: {e}")
+    
+    def maximize_window(self, target="active"):
+        """Maximize a window based on target type"""
+        try:
+            hwnd = None
+            
+            if target == "chrome":
+                print("📈 Maximizing Chrome...")
+                hwnd = self.find_chrome_window()
+                if not hwnd:
+                    print("❌ Chrome window not found")
+                    return
+            elif target == "cursor":
+                print("📈 Maximizing window under cursor...")
+                hwnd = self.find_window_under_cursor()
+                if not hwnd:
+                    print("❌ No window found under cursor")
+                    return
+            elif target == "explorer":
+                print("📈 Maximizing File Explorer...")
+                hwnd = self.find_file_explorer_window()
+                if not hwnd:
+                    print("❌ File Explorer window not found")
+                    return
+            elif target == "other":
+                print("📈 Maximizing other window (not Chrome/File Explorer)...")
+                hwnd = self.find_other_window()
+                if not hwnd:
+                    print("❌ No other window found (excluding Chrome and File Explorer)")
+                    return
+            else:  # active
+                print("📈 Maximizing active window...")
+                hwnd = self.get_active_window()
+                if not hwnd:
+                    print("❌ Could not get active window")
+                    return
+            
+            if hwnd:
+                win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+                window_title = win32gui.GetWindowText(hwnd)
+                print(f"✅ Window maximized: {window_title}")
+            
+        except Exception as e:
+            print(f"❌ Failed to maximize window: {e}")
+    
+    def scroll_down(self):
+        """Scroll down on the currently active window/tab - scrolls at least half a page"""
+        try:
+            print("⬇️ Scrolling down...")
+            
+            # Get the currently active window
+            active_hwnd = self.get_active_window()
+            
+            if active_hwnd:
+                # Check if active window is Chrome
+                window_text = win32gui.GetWindowText(active_hwnd)
+                is_chrome = "chrome" in window_text.lower() or "Google Chrome" in window_text
+                
+                if is_chrome:
+                    # Use Page Down multiple times for Chrome/browser windows (works on current tab)
+                    # Press 3 times to ensure at least half a page scrolls (each = ~80-90% viewport)
+                    for _ in range(3):
+                        pyautogui.press('pagedown')
+                        time.sleep(0.08)
+                    print("✅ Scrolled down in active window!")
+                else:
+                    # For other windows, use mouse scroll at cursor position with larger value
+                    cursor_x, cursor_y = pyautogui.position()
+                    # Scroll more aggressively - 15 scrolls for substantial movement
+                    for _ in range(15):
+                        pyautogui.scroll(-5, x=cursor_x, y=cursor_y)
+                        time.sleep(0.015)
+                    print("✅ Scrolled down in active window!")
+            else:
+                # Fallback: use mouse scroll at cursor position
+                cursor_x, cursor_y = pyautogui.position()
+                for _ in range(15):
+                    pyautogui.scroll(-5, x=cursor_x, y=cursor_y)
+                    time.sleep(0.015)
+                print("✅ Scrolled down!")
+                
+        except Exception as e:
+            print(f"❌ Failed to scroll down: {e}")
+    
+    def scroll_up(self):
+        """Scroll up on the currently active window/tab - scrolls at least half a page"""
+        try:
+            print("⬆️ Scrolling up...")
+            
+            # Get the currently active window
+            active_hwnd = self.get_active_window()
+            
+            if active_hwnd:
+                # Check if active window is Chrome
+                window_text = win32gui.GetWindowText(active_hwnd)
+                is_chrome = "chrome" in window_text.lower() or "Google Chrome" in window_text
+                
+                if is_chrome:
+                    # Use Page Up multiple times for Chrome/browser windows (works on current tab)
+                    # Press 3 times to ensure at least half a page scrolls (each = ~80-90% viewport)
+                    for _ in range(3):
+                        pyautogui.press('pageup')
+                        time.sleep(0.08)
+                    print("✅ Scrolled up in active window!")
+                else:
+                    # For other windows, use mouse scroll at cursor position with larger value
+                    cursor_x, cursor_y = pyautogui.position()
+                    # Scroll more aggressively - 15 scrolls for substantial movement
+                    for _ in range(15):
+                        pyautogui.scroll(5, x=cursor_x, y=cursor_y)
+                        time.sleep(0.015)
+                    print("✅ Scrolled up in active window!")
+            else:
+                # Fallback: use mouse scroll at cursor position
+                cursor_x, cursor_y = pyautogui.position()
+                for _ in range(15):
+                    pyautogui.scroll(5, x=cursor_x, y=cursor_y)
+                    time.sleep(0.015)
+                print("✅ Scrolled up!")
+                
+        except Exception as e:
+            print(f"❌ Failed to scroll up: {e}")
+    
+    def scroll_down_more(self):
+        """Scroll down a full visible page on the currently active window/tab"""
+        try:
+            print("⬇️ Scrolling down more (full page)...")
+            
+            # Get the currently active window
+            active_hwnd = self.get_active_window()
+            
+            if active_hwnd:
+                # Check if active window is Chrome
+                window_text = win32gui.GetWindowText(active_hwnd)
+                is_chrome = "chrome" in window_text.lower() or "Google Chrome" in window_text
+                
+                if is_chrome:
+                    # Use Page Down multiple times for full page scroll in Chrome
+                    # Press 5-6 times to scroll a full visible page (each = ~80-90% viewport)
+                    for _ in range(6):
+                        pyautogui.press('pagedown')
+                        time.sleep(0.08)
+                    print("✅ Scrolled down full page in active window!")
+                else:
+                    # For other windows, use aggressive mouse scroll for full page
+                    cursor_x, cursor_y = pyautogui.position()
+                    # Scroll much more aggressively - 30 scrolls for full page movement
+                    for _ in range(30):
+                        pyautogui.scroll(-8, x=cursor_x, y=cursor_y)
+                        time.sleep(0.01)
+                    print("✅ Scrolled down full page in active window!")
+            else:
+                # Fallback: use aggressive mouse scroll at cursor position
+                cursor_x, cursor_y = pyautogui.position()
+                for _ in range(30):
+                    pyautogui.scroll(-8, x=cursor_x, y=cursor_y)
+                    time.sleep(0.01)
+                print("✅ Scrolled down full page!")
+                
+        except Exception as e:
+            print(f"❌ Failed to scroll down more: {e}")
+    
+    def scroll_up_more(self):
+        """Scroll up a full visible page on the currently active window/tab"""
+        try:
+            print("⬆️ Scrolling up more (full page)...")
+            
+            # Get the currently active window
+            active_hwnd = self.get_active_window()
+            
+            if active_hwnd:
+                # Check if active window is Chrome
+                window_text = win32gui.GetWindowText(active_hwnd)
+                is_chrome = "chrome" in window_text.lower() or "Google Chrome" in window_text
+                
+                if is_chrome:
+                    # Use Page Up multiple times for full page scroll in Chrome
+                    # Press 5-6 times to scroll a full visible page (each = ~80-90% viewport)
+                    for _ in range(6):
+                        pyautogui.press('pageup')
+                        time.sleep(0.08)
+                    print("✅ Scrolled up full page in active window!")
+                else:
+                    # For other windows, use aggressive mouse scroll for full page
+                    cursor_x, cursor_y = pyautogui.position()
+                    # Scroll much more aggressively - 30 scrolls for full page movement
+                    for _ in range(30):
+                        pyautogui.scroll(8, x=cursor_x, y=cursor_y)
+                        time.sleep(0.01)
+                    print("✅ Scrolled up full page in active window!")
+            else:
+                # Fallback: use aggressive mouse scroll at cursor position
+                cursor_x, cursor_y = pyautogui.position()
+                for _ in range(30):
+                    pyautogui.scroll(8, x=cursor_x, y=cursor_y)
+                    time.sleep(0.01)
+                print("✅ Scrolled up full page!")
+                
+        except Exception as e:
+            print(f"❌ Failed to scroll up more: {e}")
+    
     def close_browser(self):
         """Close entire browser"""
         try:
@@ -618,6 +1155,274 @@ class VoiceBrowserController:
             
         except Exception as e:
             print(f"❌ Failed to pause video: {e}")
+    
+    def capture_screen(self):
+        """Capture screenshot of current screen"""
+        try:
+            screenshot = pyautogui.screenshot()
+            return screenshot
+        except Exception as e:
+            print(f"❌ Failed to capture screen: {e}")
+            return None
+    
+    def analyze_screen(self):
+        """Analyze current screen using Gemini API and provide description"""
+        if not self.gemini_model:
+            print("❌ Gemini API not available. Please set GEMINI_API_KEY in .env file.")
+            return
+        
+        try:
+            print("📸 Capturing screen...")
+            screenshot = self.capture_screen()
+            if not screenshot:
+                print("❌ Failed to capture screen")
+                return
+            
+            print("🔍 Analyzing screen with Gemini AI...")
+            
+            # Convert screenshot to bytes
+            img_bytes = BytesIO()
+            screenshot.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            
+            # Use Gemini Pro Vision to analyze the image
+            prompt = "Analyze this screenshot and describe what's visible on the screen in detail. Include information about windows, applications, text content, and any important elements."
+            
+            response = self.gemini_model.generate_content([prompt, screenshot])
+            
+            print("📋 Screen Analysis:")
+            print("-" * 60)
+            print(response.text)
+            print("-" * 60)
+            
+        except Exception as e:
+            print(f"❌ Failed to analyze screen: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def ask_about_screen(self, question):
+        """Ask a specific question about the current screen"""
+        if not self.gemini_model:
+            print("❌ Gemini API not available. Please set GEMINI_API_KEY in .env file.")
+            return
+        
+        try:
+            print(f"📸 Capturing screen for question: '{question}'")
+            screenshot = self.capture_screen()
+            if not screenshot:
+                print("❌ Failed to capture screen")
+                return
+            
+            print("🔍 Analyzing screen with Gemini AI...")
+            
+            # Use Gemini Pro Vision to answer the question
+            prompt = f"Answer this question about the screenshot: {question}. Be specific and accurate based on what you can see in the image."
+            
+            response = self.gemini_model.generate_content([prompt, screenshot])
+            
+            print("💡 Answer:")
+            print("-" * 60)
+            print(response.text)
+            print("-" * 60)
+            
+        except Exception as e:
+            print(f"❌ Failed to answer question: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def get_current_chrome_url(self):
+        """Get the current URL from Chrome browser"""
+        try:
+            # Method 1: Use Selenium if available
+            if self.driver:
+                try:
+                    url = self.driver.current_url
+                    print(f"📍 Current URL (Selenium): {url}")
+                    return url
+                except:
+                    pass
+            
+            # Method 2: Use PyAutoGUI to copy URL from address bar
+            print("📍 Getting URL from Chrome address bar...")
+            if not self.focus_chrome_window():
+                print("❌ Could not focus Chrome window")
+                return None
+            
+            time.sleep(0.5)
+            
+            # Focus address bar and copy URL
+            pyautogui.hotkey('ctrl', 'l')  # Focus address bar
+            time.sleep(0.3)
+            pyautogui.hotkey('ctrl', 'a')  # Select all
+            time.sleep(0.2)
+            pyautogui.hotkey('ctrl', 'c')  # Copy
+            time.sleep(0.3)
+            pyautogui.press('escape')  # Close address bar
+            
+            # Get URL from clipboard
+            try:
+                import win32clipboard
+                win32clipboard.OpenClipboard()
+                url = win32clipboard.GetClipboardData()
+                win32clipboard.CloseClipboard()
+                print(f"📍 Current URL: {url}")
+                return url
+            except ImportError:
+                print("⚠️ win32clipboard not available. Install pywin32 for clipboard access.")
+                return None
+            except Exception as e:
+                print(f"❌ Failed to get URL from clipboard: {e}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Failed to get Chrome URL: {e}")
+            return None
+    
+    def summarize_current_page(self):
+        """Summarize the current webpage using Gemini API"""
+        if not self.gemini_model:
+            print("❌ Gemini API not available. Please set GEMINI_API_KEY in .env file.")
+            return
+        
+        try:
+            print("🔍 Getting current webpage URL...")
+            url = self.get_current_chrome_url()
+            
+            if not url:
+                print("❌ Could not get current URL. Make sure Chrome is open with a webpage loaded.")
+                return
+            
+            # Check if URL is valid (not chrome:// pages or about:blank)
+            if url.startswith('chrome://') or url.startswith('about:') or url == 'chrome://newtab/':
+                print("⚠️ Cannot summarize Chrome internal pages. Please navigate to a regular webpage.")
+                return
+            
+            print(f"📄 Summarizing webpage: {url}")
+            print("⏳ This may take a moment...")
+            
+            # Try to fetch webpage content first (more reliable than URL passing)
+            try:
+                import requests
+                from bs4 import BeautifulSoup
+                
+                print("📥 Fetching webpage content...")
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                
+                # Parse HTML and extract text content
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Remove script and style elements
+                for script in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                    script.decompose()
+                
+                # Get text content
+                text_content = soup.get_text()
+                # Clean up whitespace
+                lines = (line.strip() for line in text_content.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text_content = ' '.join(chunk for chunk in chunks if chunk)
+                
+                # Limit content length (Gemini has token limits)
+                if len(text_content) > 50000:
+                    text_content = text_content[:50000] + "... [content truncated]"
+                
+                print(f"✅ Fetched {len(text_content)} characters of content")
+                
+                # Use Gemini to summarize the content
+                prompt = f"""Please analyze and summarize the following webpage content from {url}:
+
+{text_content}
+
+Provide a comprehensive summary including:
+- Main topic and purpose
+- Key points and important information
+- Any notable details or insights
+- Overall conclusion or takeaways
+
+Be thorough and accurate in your summary."""
+                
+                gemini_response = self.gemini_model.generate_content(prompt)
+                summary_text = gemini_response.text
+                
+            except ImportError:
+                # Fallback: Try passing URL directly to Gemini (if supported)
+                print("⚠️ requests/BeautifulSoup not available. Trying direct URL...")
+                prompt = f"""Please fetch and analyze the content from this URL: {url}
+
+Then provide a comprehensive summary of the document/page including:
+- Main topic and purpose
+- Key points and important information
+- Any notable details or insights
+- Overall conclusion or takeaways
+
+Be thorough and accurate in your summary."""
+                
+                gemini_response = self.gemini_model.generate_content(prompt)
+                summary_text = gemini_response.text
+                
+            except Exception as fetch_error:
+                print(f"⚠️ Could not fetch webpage content: {fetch_error}")
+                print("💡 Trying to summarize using URL directly...")
+                
+                # Last resort: pass URL to Gemini and hope it can fetch it
+                prompt = f"""Please fetch and analyze the content from this URL: {url}
+
+Then provide a comprehensive summary of the document/page including:
+- Main topic and purpose
+- Key points and important information
+- Any notable details or insights
+- Overall conclusion or takeaways
+
+Be thorough and accurate in your summary."""
+                
+                gemini_response = self.gemini_model.generate_content(prompt)
+                summary_text = gemini_response.text
+            
+            response_text = summary_text
+            
+            print("\n📋 Document Summary:")
+            print("=" * 60)
+            print(f"🌐 URL: {url}")
+            print("-" * 60)
+            print(response_text)
+            print("=" * 60)
+            
+        except Exception as e:
+            print(f"❌ Failed to summarize page: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\n💡 Tip: Make sure the webpage is publicly accessible and not behind a login.")
+    
+    def search_word_meaning(self, word):
+        """Search for the meaning of a word in Chrome"""
+        try:
+            print(f"📚 Searching meaning of: '{word}'")
+            
+            # First, ensure Chrome is open
+            if not self.find_chrome_window():
+                print("🌐 Opening Chrome...")
+                self.open_chrome()
+                time.sleep(3)
+            
+            # Focus Chrome
+            if not self.focus_chrome_window():
+                print("⚠️ Could not focus Chrome. Please ensure Chrome is open.")
+                return
+            
+            # Construct search query
+            search_query = f"meaning of {word}"
+            
+            # Search using the existing search method
+            self._search_with_pyautogui(search_query)
+            
+            print(f"✅ Search completed for meaning of '{word}'")
+            
+        except Exception as e:
+            print(f"❌ Failed to search word meaning: {e}")
     
     def stop_listening(self):
         """Stop the voice command listener"""

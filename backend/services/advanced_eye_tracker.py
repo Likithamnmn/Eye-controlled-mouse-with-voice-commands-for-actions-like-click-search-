@@ -1101,16 +1101,20 @@ class AdvancedEyeTracker:
         # Apply minimum smoothing to prevent jitter
         smoothing = max(smoothing, 0.1)
         
-        # Calculate smooth movement
-        smooth_x = current_x + (gaze_point.x - current_x) * smoothing
-        smooth_y = current_y + (gaze_point.y - current_y) * smoothing
-        
+        # Calculate smooth movement with optional sensitivity multiplier
+        sensitivity = getattr(self, 'eye_sensitivity_multiplier', 1.0)
+        delta_x = (gaze_point.x - current_x) * sensitivity
+        delta_y = (gaze_point.y - current_y) * sensitivity
+
+        smooth_x = current_x + delta_x * smoothing
+        smooth_y = current_y + delta_y * smoothing
+
         # Add acceleration for larger movements
         if distance > 100:
             # Reduce smoothing for faster movement to distant targets
             acceleration_factor = min(distance / 200, 2.0)
-            smooth_x = current_x + (gaze_point.x - current_x) * smoothing * acceleration_factor
-            smooth_y = current_y + (gaze_point.y - current_y) * smoothing * acceleration_factor
+            smooth_x = current_x + delta_x * smoothing * acceleration_factor
+            smooth_y = current_y + delta_y * smoothing * acceleration_factor
         
         # Ensure coordinates are within screen bounds
         smooth_x = max(0, min(smooth_x, self.screen_w - 1))
@@ -1227,7 +1231,7 @@ class AdvancedEyeTracker:
             'screen_engagement': self.estimate_screen_engagement() if len(self.gaze_history) >= 10 else True
         }
     
-    def save_usage_data(self, filename: str = "advanced_eye_tracking_session.json"):
+    def save_usage_data(self, filename: str = "New_advanced_eye_tracking_session.json"):
         """Save session data for future improvements"""
         session_data = {
             'usage_data': list(self.usage_data),
@@ -1236,10 +1240,24 @@ class AdvancedEyeTracker:
             'screen_resolution': [self.screen_w, self.screen_h]
         }
         
-        with open(filename, 'w') as f:
-            json.dump(session_data, f, indent=2)
-        
-        print(f"💾 Session data saved to {filename}")
+        # Save to the services directory
+        try:
+            services_dir = os.path.dirname(os.path.abspath(__file__))
+            filepath = os.path.join(services_dir, filename)
+            
+            with open(filepath, 'w') as f:
+                json.dump(session_data, f, indent=2)
+            
+            print(f"💾 Session data saved to {filepath}")
+        except Exception as e:
+            print(f"❌ Failed to save session data: {e}")
+            # Fallback to current directory if services_dir fails
+            try:
+                with open(filename, 'w') as f:
+                    json.dump(session_data, f, indent=2)
+                print(f"💾 Session data saved to {filename} (fallback)")
+            except Exception as e2:
+                print(f"❌ Fallback save also failed: {e2}")
     
     def start_quick_calibration(self):
         """Start a quick 9-point calibration process"""
@@ -1291,6 +1309,12 @@ def create_advanced_eye_tracking_demo():
     
     # Initialize tracker
     tracker = AdvancedEyeTracker()
+    # Small sensitivity boost applied only while eye-mouse is active. Increase slightly
+    # so cursor responds a bit faster to eye movements. Tune this value as needed.
+    try:
+        tracker.eye_sensitivity_multiplier = 1.50  # small, conservative increase (5%)
+    except Exception:
+        pass
     
     # Camera setup with better error handling
     cap = cv2.VideoCapture(0)
@@ -1310,9 +1334,19 @@ def create_advanced_eye_tracking_demo():
     # Demo state
     mouse_control_enabled = True
     frame_count = 0
-    mirror_camera = False  # Keep FALSE to match calibrator coordinate system
-    
+    # Try to read mirror preference from the calibrator module so both preview
+    # and calibration use the same orientation by default.
+    try:
+        from services import pure_eye_calibrator
+        mirror_camera = bool(getattr(pure_eye_calibrator, 'mirror_preview', False))
+    except Exception:
+        mirror_camera = False  # Keep FALSE to match calibrator coordinate system
+
     print(f"📷 Camera mirroring: {'ON' if mirror_camera else 'OFF'} (matches calibrator)")
+    # Visualization mode for camera preview: when True the on-screen gaze marker
+    # will be placed at the detected eye (iris) position instead of the mapped
+    # screen location. This helps visually check eye detection alignment.
+    viz_place_on_eye = True
     print("   Press 'M' to toggle camera mirroring")
     print("   ⚠️  Note: Calibrator uses non-mirrored coordinates")
     
@@ -1449,18 +1483,48 @@ def create_advanced_eye_tracking_demo():
                     
                     # Visual crosshair for gaze direction
                     if gaze_point.confidence > 0.3:
-                        # Scale gaze point to frame coordinates for visualization
-                        viz_x = int((gaze_point.x / tracker.screen_w) * frame.shape[1])
-                        viz_y = int((gaze_point.y / tracker.screen_h) * frame.shape[0])
-                        
-                        # Clamp to frame bounds
-                        viz_x = max(5, min(viz_x, frame.shape[1] - 5))
-                        viz_y = max(5, min(viz_y, frame.shape[0] - 5))
-                        
-                        # Draw crosshair
-                        cv2.line(frame, (viz_x - 10, viz_y), (viz_x + 10, viz_y), (0, 255, 255), 2)
-                        cv2.line(frame, (viz_x, viz_y - 10), (viz_x, viz_y + 10), (0, 255, 255), 2)
-                        cv2.circle(frame, (viz_x, viz_y), 5, (0, 255, 255), 1)
+                        try:
+                            if viz_place_on_eye:
+                                # Use detected iris (camera coordinates) for visualization
+                                left_x, left_y = tracker.eye_state.left_iris
+                                right_x, right_y = tracker.eye_state.right_iris
+                                # If both eyes are available, center the marker between them
+                                if left_x and left_y and right_x and right_y:
+                                    viz_x = int((left_x + right_x) / 2)
+                                    viz_y = int((left_y + right_y) / 2)
+                                # Prefer left eye if only left is available
+                                elif left_x and left_y:
+                                    viz_x = int(left_x)
+                                    viz_y = int(left_y)
+                                # Else use right eye if only right is available
+                                elif right_x and right_y:
+                                    viz_x = int(right_x)
+                                    viz_y = int(right_y)
+                                else:
+                                    # Fall back to mapped screen coordinate visualization
+                                    viz_x = int((gaze_point.x / tracker.screen_w) * frame.shape[1])
+                                    viz_y = int((gaze_point.y / tracker.screen_h) * frame.shape[0])
+                            else:
+                                # Scale gaze point to frame coordinates for visualization
+                                viz_x = int((gaze_point.x / tracker.screen_w) * frame.shape[1])
+                                viz_y = int((gaze_point.y / tracker.screen_h) * frame.shape[0])
+
+                            # Clamp to frame bounds
+                            viz_x = max(5, min(viz_x, frame.shape[1] - 5))
+                            viz_y = max(5, min(viz_y, frame.shape[0] - 5))
+
+                            # Draw crosshair (eye-centered visualization draws a filled marker)
+                            if viz_place_on_eye:
+                                # Slightly smaller marker so it doesn't obscure the eye
+                                cv2.circle(frame, (viz_x, viz_y), 4, (0, 255, 255), -1)
+                                cv2.circle(frame, (viz_x, viz_y), 7, (255, 255, 255), 2)
+                            else:
+                                cv2.line(frame, (viz_x - 7, viz_y), (viz_x + 7, viz_y), (0, 255, 255), 2)
+                                cv2.line(frame, (viz_x, viz_y - 7), (viz_x, viz_y + 7), (0, 255, 255), 2)
+                                cv2.circle(frame, (viz_x, viz_y), 3, (0, 255, 255), 1)
+                        except Exception as e:
+                            # Fail silently on visualization errors
+                            pass
                     
                     # Show calibration status with color coding
                     if tracker.is_calibrated:

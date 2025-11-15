@@ -16,6 +16,13 @@ from datetime import datetime
 import pyautogui
 from collections import deque
 
+# Expose the latest saved calibration filename for other services to pick up
+latest_calibration_file = None
+
+# Calibration preview mirror flag
+# Set to True if you want a mirror-like preview (common for user-facing preview).
+# Set to False to show the raw camera orientation (non-mirrored).
+mirror_preview = True
 class PureEyeCalibrator:
     """Calibrates pure eye movement for cursor control"""
     
@@ -530,11 +537,20 @@ class PureEyeCalibrator:
         # Compute transformation matrix using polynomial regression
         self.transformation_matrix = self.compute_transformation_matrix(eye_points, screen_points)
         
-        # Save calibration data
-        self.save_calibration()
-        
+        # Save calibration data and expose filename for other modules
+        filename = self.save_calibration()
+        try:
+            # store on instance
+            self.saved_filename = filename
+            # also expose at module level for other services (advanced tracker will search for files)
+            global latest_calibration_file
+            latest_calibration_file = filename
+        except Exception:
+            pass
+
         self.calibration_complete = True
         print("🎉 Calibration completed successfully!")
+        print(f"💾 Calibration saved to: {filename}")
         print("👀 You can now control cursor with pure eye movement!")
     
     def compute_transformation_matrix(self, eye_points, screen_points):
@@ -723,7 +739,6 @@ class PureEyeCalibrator:
         """Save calibration data with landmark-based mappings to file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"landmark_eye_calibration_{timestamp}.json"
-        
         # Convert all data to JSON-serializable format
         calibration_data = {
             'transformation_matrix': self._make_json_serializable(self.transformation_matrix),
@@ -737,14 +752,22 @@ class PureEyeCalibrator:
             'calibration_type': 'landmark_based',
             'mapping_quality': self._make_json_serializable(self._assess_mapping_quality())
         }
-        
-        with open(filename, 'w') as f:
-            json.dump(calibration_data, f, indent=2)
-        
-        print(f"💾 Landmark-based calibration saved to: {filename}")
-        print(f"📊 Landmark mappings created: {len(self.landmark_screen_mapping)}")
-        print(f"🗺️  Screen regions mapped: {len(self.screen_region_landmarks)}")
-        return filename
+        # Save to the services directory where the tracker looks for files
+        try:
+            services_dir = os.path.dirname(os.path.abspath(__file__))
+            filepath = os.path.join(services_dir, filename)
+
+            with open(filepath, 'w') as f:
+                json.dump(calibration_data, f, indent=2)
+
+            print(f"💾 Landmark-based calibration saved to: {filepath}")
+            print(f"📊 Landmark mappings created: {len(self.landmark_screen_mapping)}")
+            print(f"🗺️  Screen regions mapped: {len(self.screen_region_landmarks)}")
+            return filepath
+
+        except Exception as e:
+            print(f"❌ Failed to save calibration: {e}")
+            return None
     
     def _assess_mapping_quality(self):
         """Assess overall quality of landmark mappings"""
@@ -1034,6 +1057,12 @@ def run_pure_eye_calibration():
             ret, frame = cap.read()
             if not ret:
                 continue
+            # Optionally mirror/unmirror the preview depending on config
+            try:
+                if mirror_preview:
+                    frame = cv2.flip(frame, 1)
+            except Exception:
+                pass
             
             # Process face landmarks with retry logic
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1129,10 +1158,10 @@ def run_pure_eye_calibration():
                 # Draw detailed eye tracking visualization
                 eye_x, eye_y = int(eye_pos[0]), int(eye_pos[1])
                 
-                # Main gaze point (large, bright indicator)
-                cv2.circle(frame, (eye_x, eye_y), 12, (0, 255, 0), -1)
-                cv2.circle(frame, (eye_x, eye_y), 16, (0, 255, 0), 3)
-                cv2.circle(frame, (eye_x, eye_y), 20, (255, 255, 255), 2)
+                # Main gaze point (smaller indicator so it doesn't block the iris)
+                cv2.circle(frame, (eye_x, eye_y), 6, (0, 255, 0), -1)
+                cv2.circle(frame, (eye_x, eye_y), 10, (0, 255, 0), 2)
+                cv2.circle(frame, (eye_x, eye_y), 12, (255, 255, 255), 1)
                 
                 # Draw individual iris landmarks for precision feedback
                 iris_landmarks = [469, 470, 471, 472, 474, 475, 476, 477]
@@ -1258,6 +1287,24 @@ def run_pure_eye_calibration():
     finally:
         cap.release()
         cv2.destroyAllWindows()
+
+    # Return the filename of the latest saved calibration if available
+    try:
+        # Prefer module-level exposed variable
+        global latest_calibration_file
+        if latest_calibration_file:
+            return latest_calibration_file
+    except Exception:
+        pass
+
+    # Fallback: try to read from calibrator instance
+    try:
+        if 'calibrator' in locals() and hasattr(calibrator, 'saved_filename'):
+            return calibrator.saved_filename
+    except Exception:
+        pass
+
+    return None
 
 if __name__ == "__main__":
     run_pure_eye_calibration()

@@ -106,7 +106,7 @@ try:
         if not success:
             print("Failed to read from webcam")
             break
-        print("Frame captured")
+        #print("Frame captured")
 
         img = cv2.flip(img, 1)  # Flip for mirror effect
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
